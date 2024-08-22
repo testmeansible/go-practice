@@ -27,8 +27,8 @@ import (
 
 func main() {
 	// Create a new config based on kubeconfig file.
-	var kubeconfig *string
-	kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
+	// var kubeconfig *string
+	kubeconfig := flag.String("kubeconfig", "C:/Users/Mansoor/Desktop/kube/config", "absolute path to the kubeconfig file")
 	flag.Parse()
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
@@ -40,6 +40,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	// Now you can use `clientset` to interact with the Kubernetes cluster
+	fmt.Println("Successfully connected to the cluster!")
 
 	// List global network policies.
 	list, err := cs.ProjectcalicoV3().GlobalNetworkPolicies().List(context.Background(), v1.ListOptions{})
