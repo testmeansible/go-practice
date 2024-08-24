@@ -26,7 +26,7 @@ func NewAdmissionController() (*AdmissionController, error) {
 		return nil, fmt.Errorf("could not get in-cluster config: %v", err)
 	}
 
-	// config, err := clientcmd.BuildConfigFromFlags("", "C:\\Users\\Mansoor\\Desktop\\kube\\config")
+	// config, err := clientcmd.BuildConfigFromFlags("", "C:\\Users\\aaaaaa\\Desktop\\kube\\config")
 	// if err != nil {
 	// 	panic(err.Error())
 	// }
