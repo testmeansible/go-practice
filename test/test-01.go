@@ -2,172 +2,102 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"flag"
 	"fmt"
-	"net/http"
-	"os/exec"
-	"strings"
+	"os"
+	"path/filepath"
 
-	calicoApi "github.com/projectcalico/api/pkg/apis/v3"
-	calicoClient "github.com/projectcalico/api/pkg/client/clientset_generated/clientset"
-	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/homedir"
+
+	crdv1 "github.com/projectcalico/api/pkg/apis/projectcalico/v3"
+	crdclient "github.com/projectcalico/api/pkg/client/clientset_generated/clientset"
 )
 
-func handleAdmissionReview(w http.ResponseWriter, r *http.Request) {
-	var admissionReviewReq admissionv1.AdmissionReview
-	if err := json.NewDecoder(r.Body).Decode(&admissionReviewReq); err != nil {
-		http.Error(w, fmt.Sprintf("could not decode request: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	admissionResponse := &admissionv1.AdmissionResponse{
-		UID:     admissionReviewReq.Request.UID,
-		Allowed: true,
-	}
-
-	if admissionReviewReq.Request.Kind.Kind == "Namespace" {
-		config, err := rest.InClusterConfig()
-		if err != nil {
-			http.Error(w, fmt.Sprintf("could not get in-cluster config: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		k8sClient, err := kubernetes.NewForConfig(config)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("could not create Kubernetes client: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		calicoClient, err := calicoClient.NewForConfig(config)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("could not create Calico client: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		if admissionReviewReq.Request.Operation == admissionv1.Create {
-			// Step 1: Fetch the master IP pool
-			masterPool, err := getMasterPool(calicoClient, "location=my-location", "/16")
-			if err != nil {
-				http.Error(w, fmt.Sprintf("could not find master IP pool: %v", err), http.StatusInternalServerError)
-				return
-			}
-
-			// Step 2: Split the master pool into /25 subnets
-			subnets, err := splitMasterPool(masterPool.Spec.CIDR, "/25")
-			if err != nil {
-				http.Error(w, fmt.Sprintf("could not split master pool: %v", err), http.StatusInternalServerError)
-				return
-			}
-
-			// Step 3: Select an available subnet
-			availablePool := selectAvailableSubnet(subnets)
-			if availablePool == "" {
-				http.Error(w, "no available subnets found", http.StatusInternalServerError)
-				return
-			}
-
-			// Step 4: Patch the namespace with the selected IP pool
-			admissionResponse.Patch = []byte(fmt.Sprintf(`[{"op": "add", "path": "/metadata/annotations/ip-pool", "value": "%s"}]`, availablePool))
-			patchType := admissionv1.PatchTypeJSONPatch
-			admissionResponse.PatchType = &patchType
-		} else if admissionReviewReq.Request.Operation == admissionv1.Delete {
-			// Step 5: Handle namespace deletion - remove annotation
-			namespace := admissionReviewReq.Request.Name
-			err := removePoolAnnotation(calicoClient, namespace)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("could not remove annotation from pool: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-	}
-
-	admissionReviewRes := admissionv1.AdmissionReview{
-		Response: admissionResponse,
-	}
-
-	if err := json.NewEncoder(w).Encode(admissionReviewRes); err != nil {
-		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
-		return
-	}
+type IPPool struct {
+	Metadata struct {
+		Name   string
+		Labels map[string]string
+	} `json:"metadata"`
 }
 
-// Fetch the master pool based on label and subnet size
-func getMasterPool(client calicoClient.Interface, labelSelector, cidr string) (*calicoApi.IPPool, error) {
-	ipPools, err := client.IPPools().List(context.Background(), metav1.ListOptions{
-		LabelSelector: labelSelector,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("could not list IP pools: %v", err)
-	}
+type AdmissionController struct {
+	clientset *kubernetes.Clientset
+	crdClient *crdclient.Clientset
+}
 
-	for _, pool := range ipPools.Items {
-		if pool.Spec.CIDR == cidr {
-			return &pool, nil
+func (a *AdmissionController) selectAvailableSubnet(subnets []crdv1.IPPool) string {
+	for _, subnet := range subnets {
+		labels := subnet.ObjectMeta.Labels
+		if location, ok := labels["location"]; ok && location == "zone-lhr" {
+			if status, ok := labels["status"]; ok && status == "available" {
+				return subnet.Name
+			}
 		}
-	}
-	return nil, fmt.Errorf("no matching IP pool found")
-}
-
-// Split the master pool into smaller subnets using calicoctl
-func splitMasterPool(cidr, newSubnetSize string) ([]string, error) {
-	cmd := exec.Command("calicoctl", "ipam", "split", cidr, newSubnetSize)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to split IP pool: %v", err)
-	}
-
-	subnets := strings.Split(strings.TrimSpace(string(output)), "\n")
-	return subnets, nil
-}
-
-// Select the first available subnet
-func selectAvailableSubnet(subnets []string) string {
-	// Here you would check which subnets are in use and return the first available one
-	// For simplicity, this example assumes all subnets are available
-	if len(subnets) > 0 {
-		return subnets[0]
 	}
 	return ""
 }
 
-// Remove annotation from IP pool when namespace is deleted
-func removePoolAnnotation(client calicoClient.Interface, namespace string) error {
-	// Fetch the pool associated with the namespace
-	poolName := getPoolNameFromNamespace(namespace) // Implement this function as needed
-	pool, err := client.IPPools().Get(context.Background(), poolName, metav1.GetOptions{})
+func (a *AdmissionController) getIPPoolsFromCluster() ([]crdv1.IPPool, error) {
+	// Fetch IPPools from the Kubernetes cluster using the CRD client
+	ippoolList, err := a.crdClient.ProjectcalicoV3().IPPools().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		return fmt.Errorf("could not fetch IP pool: %v", err)
+		return nil, err
 	}
 
-	// Remove the annotation marking it as used
-	patch := []byte(`[{"op": "remove", "path": "/metadata/annotations/ip-pool"}]`)
-	_, err = client.IPPools().Patch(context.Background(), poolName, metav1.PatchTypeJSONPatch, patch, metav1.PatchOptions{})
-	if err != nil {
-		return fmt.Errorf("could not remove annotation from IP pool: %v", err)
-	}
-
-	// Logic to mark the pool as available
-	// ...
-
-	return nil
-}
-
-// Helper function to extract pool name from namespace
-func getPoolNameFromNamespace(namespace string) string {
-	// Implement your logic to retrieve the associated pool name from the namespace
-	return "example-pool-name" // Placeholder
+	return ippoolList.Items, nil
 }
 
 func main() {
-	http.HandleFunc("/mutate", handleAdmissionReview)
-	server := &http.Server{
-		Addr: ":8443",
+	var kubeconfig *string
+	if home := homedir.HomeDir(); home != "" {
+		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
+	} else {
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
-	fmt.Println("Starting webhook server on port 8443...")
-	if err := server.ListenAndServeTLS("/tls/tls.crt", "/tls/tls.key"); err != nil {
-		panic(err.Error())
+	flag.Parse()
+
+	// Build the Kubernetes client configuration
+	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	if err != nil {
+		fmt.Println("Error building kubeconfig:", err)
+		os.Exit(1)
+	}
+
+	// Create the Kubernetes client
+	clientset, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		fmt.Println("Error creating Kubernetes client:", err)
+		os.Exit(1)
+	}
+
+	// Create the CRD client to interact with custom resources like Calico's IPPool
+	crdClient, err := crdclient.NewForConfig(config)
+	if err != nil {
+		fmt.Println("Error creating CRD client:", err)
+		os.Exit(1)
+	}
+
+	// Initialize the AdmissionController with the clientset and CRD client
+	controller := &AdmissionController{
+		clientset: clientset,
+		crdClient: crdClient,
+	}
+
+	// Fetch IP pools from the Kubernetes cluster using the CRD API
+	ipPools, err := controller.getIPPoolsFromCluster()
+	if err != nil {
+		fmt.Println("Error getting IP pools:", err)
+		os.Exit(1)
+	}
+
+	// Test the logic with real cluster data
+	availablePool := controller.selectAvailableSubnet(ipPools)
+	if availablePool == "" {
+		fmt.Println("No available subnets found.")
+	} else {
+		fmt.Printf("Selected IP Pool: %s\n", availablePool)
 	}
 }

@@ -1,20 +1,28 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 
 	"admission-controller-03/pkg/admission"
 )
 
 func main() {
-	http.HandleFunc("/mutate", admission.HandleAdmissionReview)
+	controller, err := admission.NewAdmissionController()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create admission controller: %v", err))
+	}
+
+	http.HandleFunc("/mutate", controller.HandleAdmissionReview)
 	server := &http.Server{
 		Addr: ":8443",
 	}
+	fmt.Println("Starting webhook server on port 8443...")
+	// Update the path to the absolute path on your Windows system
+	certPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.crt"
+	keyPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.key"
 
-	log.Println("Starting webhook server on port 8443...")
-	if err := server.ListenAndServeTLS("/tls/tls.crt", "/tls/tls.key"); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	if err := server.ListenAndServeTLS(certPath, keyPath); err != nil {
+		panic(fmt.Sprintf("Failed to start server: %v", err))
 	}
 }
