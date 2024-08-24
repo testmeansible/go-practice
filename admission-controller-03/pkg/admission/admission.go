@@ -12,7 +12,7 @@ import (
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/rest"
 )
 
 type AdmissionController struct {
@@ -21,15 +21,15 @@ type AdmissionController struct {
 }
 
 func NewAdmissionController() (*AdmissionController, error) {
-	// config, err := rest.InClusterConfig()
-	// if err != nil {
-	// 	return nil, fmt.Errorf("could not get in-cluster config: %v", err)
-	// }
-
-	config, err := clientcmd.BuildConfigFromFlags("", "C:\\Users\\Mansoor\\Desktop\\kube\\config")
+	config, err := rest.InClusterConfig()
 	if err != nil {
-		panic(err.Error())
+		return nil, fmt.Errorf("could not get in-cluster config: %v", err)
 	}
+
+	// config, err := clientcmd.BuildConfigFromFlags("", "C:\\Users\\Mansoor\\Desktop\\kube\\config")
+	// if err != nil {
+	// 	panic(err.Error())
+	// }
 
 	clientset, err := clientset.NewForConfig(config)
 	if err != nil {
@@ -85,17 +85,6 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				writeAdmissionResponse(w, admissionResponse)
 				return
 			}
-
-			// Step 3: Select an available subnet
-			// availablePool := a.selectAvailableSubnet()
-			// if availablePool == "" {
-			// 	admissionResponse.Allowed = false
-			// 	admissionResponse.Result = &metav1.Status{
-			// 		Message: "No available subnets found.",
-			// 	}
-			// 	writeAdmissionResponse(w, admissionResponse)
-			// 	return
-			// }
 
 			// Step 4: Patch the namespace with the selected IP pool
 			patch := []map[string]interface{}{
