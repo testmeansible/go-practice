@@ -19,8 +19,12 @@ func main() {
 	}
 	fmt.Println("Starting webhook server on port 8443...")
 	// Update the path to the absolute path on your Windows system
-	certPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.crt"
-	keyPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.key"
+	// certPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.crt"
+	// keyPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.key"
+
+	// Use the default file paths where the secrets are mounted in Kubernetes
+	certPath := "/etc/webhook/certs/admission_controller.crt"
+	keyPath := "/etc/webhook/certs/admission_controller.key"
 
 	if err := server.ListenAndServeTLS(certPath, keyPath); err != nil {
 		panic(fmt.Sprintf("Failed to start server: %v", err))
