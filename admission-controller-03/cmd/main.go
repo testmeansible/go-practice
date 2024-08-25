@@ -23,8 +23,8 @@ func main() {
 	// keyPath := "C:\\Users\\Mansoor\\Desktop\\kube\\admission_controller.key"
 
 	// Use the default file paths where the secrets are mounted in Kubernetes
-	certPath := "/etc/webhook/certs/admission_controller.crt"
-	keyPath := "/etc/webhook/certs/admission_controller.key"
+	certPath := "/etc/webhook/certs/tls.crt"
+	keyPath := "/etc/webhook/certs/tls.key"
 
 	if err := server.ListenAndServeTLS(certPath, keyPath); err != nil {
 		panic(fmt.Sprintf("Failed to start server: %v", err))
