@@ -194,6 +194,10 @@ func (a *AdmissionController) updateIPPoolLabel(poolName, newStatus string) erro
 
 func writeAdmissionResponse(w http.ResponseWriter, admissionResponse *admissionv1.AdmissionResponse) {
 	admissionReview := admissionv1.AdmissionReview{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "admission.k8s.io/v1",
+			Kind:       "AdmissionReview",
+		},
 		Response: admissionResponse,
 	}
 
