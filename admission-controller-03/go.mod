@@ -9,6 +9,8 @@ require (
 	k8s.io/client-go v0.31.0
 )
 
+require go.uber.org/multierr v1.10.0 // indirect
+
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.11.0 // indirect
@@ -30,6 +32,7 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.26.0 // indirect
 	golang.org/x/oauth2 v0.21.0 // indirect
 	golang.org/x/sys v0.21.0 // indirect
