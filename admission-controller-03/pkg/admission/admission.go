@@ -186,27 +186,29 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 			} else {
 				a.Logger.Warn("No IP pools found in annotation")
 			}
+			// Do not attempt to patch the namespace during deletion
+			// a.writeAdmissionResponse(w, admissionResponse)
 
-			// Remove the annotation from the namespace
-			patch := []map[string]interface{}{
-				{
-					"op":   "remove",
-					"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
-				},
-			}
+			// // Remove the annotation from the namespace
+			// patch := []map[string]interface{}{
+			// 	{
+			// 		"op":   "remove",
+			// 		"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
+			// 	},
+			// }
 
-			patchBytes, err := json.Marshal(patch)
-			if err != nil {
-				a.Logger.Error("could not marshal patch", zap.Error(err))
-				http.Error(w, fmt.Sprintf("could not marshal patch: %v", err), http.StatusInternalServerError)
-				return
-			}
+			// patchBytes, err := json.Marshal(patch)
+			// if err != nil {
+			// 	a.Logger.Error("could not marshal patch", zap.Error(err))
+			// 	http.Error(w, fmt.Sprintf("could not marshal patch: %v", err), http.StatusInternalServerError)
+			// 	return
+			// }
 
-			admissionResponse.Patch = patchBytes
-			admissionResponse.PatchType = func() *admissionv1.PatchType {
-				pt := admissionv1.PatchTypeJSONPatch
-				return &pt
-			}()
+			// admissionResponse.Patch = patchBytes
+			// admissionResponse.PatchType = func() *admissionv1.PatchType {
+			// 	pt := admissionv1.PatchTypeJSONPatch
+			// 	return &pt
+			// }()
 
 		}
 	}
