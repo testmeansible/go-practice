@@ -210,18 +210,21 @@ func (a *AdmissionController) handleNamespaceDeletion(w http.ResponseWriter, adm
 		a.Logger.Warn("No IP pools found in annotation")
 	}
 
-	// Remove the annotation from the namespace
-	patch := []map[string]interface{}{
-		{
-			"op":   "remove",
-			"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
-		},
-	}
+	// // Remove the annotation from the namespace
+	// patch := []map[string]interface{}{
+	// 	{
+	// 		"op":   "remove",
+	// 		"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
+	// 	},
+	// }
 
-	if err := a.applyPatch(w, patch); err != nil {
-		a.Logger.Error("could not apply patch", zap.Error(err))
-		http.Error(w, fmt.Sprintf("could not apply patch: %v", err), http.StatusInternalServerError)
-	}
+	// if err := a.applyPatch(w, patch); err != nil {
+	// 	a.Logger.Error("could not apply patch", zap.Error(err))
+	// 	http.Error(w, fmt.Sprintf("could not apply patch: %v", err), http.StatusInternalServerError)
+	// }
+	// Do not modify the namespace object in the admission response
+	admissionResponse.Allowed = true
+	a.writeAdmissionResponse(w, admissionResponse)
 }
 
 func (a *AdmissionController) applyPatch(w http.ResponseWriter, patch []map[string]interface{}) error {
