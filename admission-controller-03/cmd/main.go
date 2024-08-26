@@ -2,15 +2,26 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
+
+	"go.uber.org/zap"
 
 	"admission-controller-03/pkg/admission"
 )
 
 func main() {
-	controller, err := admission.NewAdmissionController()
+	// Create a logger
+	logger, err := zap.NewProduction()
 	if err != nil {
+		log.Fatalf("Can't initialize zap logger: %v", err)
+	}
+	defer logger.Sync() // flushes buffer, if any
+	controller, err := admission.NewAdmissionController(logger)
+	if err != nil {
+		logger.Error("could not create admission controller", zap.Error(err))
 		panic(fmt.Sprintf("Failed to create admission controller: %v", err))
+
 	}
 
 	http.HandleFunc("/mutate", controller.HandleAdmissionReview)

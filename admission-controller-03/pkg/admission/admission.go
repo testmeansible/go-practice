@@ -24,9 +24,10 @@ type AdmissionController struct {
 	Logger       *zap.Logger
 }
 
-func NewAdmissionController() (*AdmissionController, error) {
+func NewAdmissionController(logger *zap.Logger) (*AdmissionController, error) {
 	config, err := rest.InClusterConfig()
 	if err != nil {
+		logger.Error("could not get in-cluster config", zap.Error(err))
 		return nil, fmt.Errorf("could not get in-cluster config: %v", err)
 	}
 
@@ -37,30 +38,24 @@ func NewAdmissionController() (*AdmissionController, error) {
 
 	clientset, err := clientset.NewForConfig(config)
 	if err != nil {
+		logger.Error("could not create Calico clientset", zap.Error(err))
 		return nil, fmt.Errorf("could not create Calico clientset: %v", err)
 	}
 
 	k8sClientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
+		logger.Error("could not create Kubernetes clientset", zap.Error(err))
 		return nil, fmt.Errorf("could not create Kubernetes clientset: %v", err)
 	}
 
-	logger, _ := zap.NewProduction() // Create a logger
-	defer logger.Sync()              // Flushes buffer, if any
+	// logger, _ := zap.NewProduction() // Create a logger
+	// defer logger.Sync()              // Flushes buffer, if any
 
 	return &AdmissionController{
 		Clientset:    clientset,
 		K8sClientset: k8sClientset,
 		Logger:       logger,
 	}, nil
-}
-
-func normalizeLabels(labels map[string]string) map[string]string {
-	normalized := make(map[string]string)
-	for key, value := range labels {
-		normalized[strings.ToLower(key)] = value
-	}
-	return normalized
 }
 
 // Implement your logic for handling admission requests
@@ -82,7 +77,8 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 	if admissionReviewReq.Request.Kind.Kind == "Namespace" {
 		if admissionReviewReq.Request.Operation == admissionv1.Create {
 			// Handle namespace creation logic
-			a.Logger.Info("Handling namespace creation")
+			// a.Logger.Info("Handling namespace creation")
+			a.Logger.Info("Processing namespace creation", zap.String("namespace", admissionReviewReq.Request.Name))
 			// Fetch the available IP pools
 			ipPools, err := a.Clientset.ProjectcalicoV3().IPPools().List(context.TODO(), metav1.ListOptions{})
 			if err != nil {
@@ -91,7 +87,7 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				admissionResponse.Result = &metav1.Status{
 					Message: fmt.Sprintf("could not list IP pools: %v", err),
 				}
-				writeAdmissionResponse(w, admissionResponse)
+				a.writeAdmissionResponse(w, admissionResponse)
 				return
 			}
 
@@ -103,7 +99,7 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				admissionResponse.Result = &metav1.Status{
 					Message: "No available subnets found.",
 				}
-				writeAdmissionResponse(w, admissionResponse)
+				a.writeAdmissionResponse(w, admissionResponse)
 				return
 			}
 			a.Logger.Info("Selected subnet for namespace", zap.String("subnet", availableSubnet))
@@ -143,15 +139,16 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				admissionResponse.Result = &metav1.Status{
 					Message: fmt.Sprintf("could not update IP pool label: %v", err),
 				}
-				writeAdmissionResponse(w, admissionResponse)
+				a.writeAdmissionResponse(w, admissionResponse)
 				return
 			}
 
 		} else if admissionReviewReq.Request.Operation == admissionv1.Delete {
 			// Handle namespace deletion logic
-			a.Logger.Info("Handling namespace deletion")
 			// Fetch the namespace to get the IP pool annotation
 			namespace := admissionReviewReq.Request.Name
+			a.Logger.Info("Handling namespace deletion", zap.String("namespace", namespace))
+
 			ns, err := a.K8sClientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
 			if err != nil {
 				a.Logger.Error("could not fetch namespace", zap.Error(err))
@@ -159,29 +156,34 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				return
 			}
 
-			ipPoolAnnotation := ns.Annotations["cni.projectcalico.org/ipv4pools"]
-			if ipPoolAnnotation == "" {
-				a.Logger.Warn("No IP pool annotation found")
-				writeAdmissionResponse(w, admissionResponse)
+			ipPool, found := ns.Annotations["cni.projectcalico.org/ipv4pools"]
+			if !found || ipPool == "" {
+				a.Logger.Warn("No IP pool annotation found, nothing to update")
+				a.writeAdmissionResponse(w, admissionResponse)
 				return
 			}
 
-			// Parse the IP pool name from the annotation
-			var ipPools []string
-			if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
-				a.Logger.Error("could not parse IP pool annotation", zap.Error(err))
-				http.Error(w, fmt.Sprintf("could not parse IP pool annotation: %v", err), http.StatusInternalServerError)
-				return
-			}
-			ipPool := ipPools[0] // Assuming single IP pool per namespace
+			// // Parse the IP pool name from the annotation
+			// var ipPools []string
+			// if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
+			// 	a.Logger.Error("could not parse IP pool annotation", zap.Error(err))
+			// 	http.Error(w, fmt.Sprintf("could not parse IP pool annotation: %v", err), http.StatusInternalServerError)
+			// 	return
+			// }
+			// ipPool := ipPools[0] // Assuming single IP pool per namespace
 
 			// Mark the IP pool as available by updating the label
+			// if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
+			// 	a.Logger.Error("could not update IP pool label", zap.Error(err))
+			// 	http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
+			// 	return
+			// }
+			// Update the IP pool label to "available"
 			if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
 				a.Logger.Error("could not update IP pool label", zap.Error(err))
 				http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
 				return
 			}
-
 			// Remove the annotation from the namespace
 			patch := []map[string]interface{}{
 				{
@@ -202,10 +204,12 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				pt := admissionv1.PatchTypeJSONPatch
 				return &pt
 			}()
+
 		}
 	}
 
-	writeAdmissionResponse(w, admissionResponse)
+	a.writeAdmissionResponse(w, admissionResponse)
+	a.Logger.Info("Admission review request handled successfully")
 }
 
 // Select an available subnet
@@ -214,16 +218,27 @@ func (a *AdmissionController) selectAvailableSubnet(subnets []crdv1.IPPool) stri
 		labels := normalizeLabels(subnet.ObjectMeta.Labels)
 		if location, ok := labels["location"]; ok && location == "zone-lhr" {
 			if status, ok := labels["status"]; ok && status == "available" {
+				a.Logger.Info("Found available subnet", zap.String("subnet", subnet.Name))
 				return subnet.Name
 			}
 		}
 	}
+	a.Logger.Warn("No available subnet found")
 	return ""
+}
+
+func normalizeLabels(labels map[string]string) map[string]string {
+	normalized := make(map[string]string)
+	for key, value := range labels {
+		normalized[strings.ToLower(key)] = value
+	}
+	return normalized
 }
 
 func (a *AdmissionController) updateIPPoolLabel(poolName, newStatus string) error {
 	ipPool, err := a.Clientset.ProjectcalicoV3().IPPools().Get(context.TODO(), poolName, metav1.GetOptions{})
 	if err != nil {
+		a.Logger.Error("could not get IP pool", zap.Error(err))
 		return fmt.Errorf("could not get IP pool: %v", err)
 	}
 
@@ -238,12 +253,15 @@ func (a *AdmissionController) updateIPPoolLabel(poolName, newStatus string) erro
 
 	_, err = a.Clientset.ProjectcalicoV3().IPPools().Update(context.TODO(), ipPool, metav1.UpdateOptions{})
 	if err != nil {
+		a.Logger.Error("could not update IP pool", zap.Error(err))
 		return fmt.Errorf("could not update IP pool: %v", err)
 	}
+	a.Logger.Info("Successfully updated IP pool label", zap.String("poolName", poolName), zap.String("newStatus", newStatus))
 	return nil
 }
 
-func writeAdmissionResponse(w http.ResponseWriter, admissionResponse *admissionv1.AdmissionResponse) {
+func (a *AdmissionController) writeAdmissionResponse(w http.ResponseWriter, admissionResponse *admissionv1.AdmissionResponse) {
+	a.Logger.Info("Writing admission response")
 	admissionReview := admissionv1.AdmissionReview{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "admission.k8s.io/v1",
@@ -253,6 +271,9 @@ func writeAdmissionResponse(w http.ResponseWriter, admissionResponse *admissionv
 	}
 
 	if err := json.NewEncoder(w).Encode(admissionReview); err != nil {
+		a.Logger.Error("could not encode response", zap.Error(err))
 		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
 	}
+
+	a.Logger.Info("Admission review request handled successfully")
 }
