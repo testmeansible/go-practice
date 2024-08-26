@@ -62,7 +62,7 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 
 	if admissionReviewReq.Request.Kind.Kind == "Namespace" {
 		if admissionReviewReq.Request.Operation == admissionv1.Create {
-			// Handle namespace creation logic here
+			// Handle namespace creation logic
 
 			// Fetch the available IP pools
 			ipPools, err := a.Clientset.ProjectcalicoV3().IPPools().List(context.TODO(), metav1.ListOptions{})
@@ -86,7 +86,7 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				return
 			}
 
-			// Step 4: Patch the namespace with the selected IP pool
+			// Patch the namespace with the selected IP pool
 			patch := []map[string]interface{}{
 				{
 					"op":    "add",
@@ -118,9 +118,9 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 			}
 
 		} else if admissionReviewReq.Request.Operation == admissionv1.Delete {
-			// Handle namespace deletion logic here
+			// Handle namespace deletion logic
 
-			// Step 1: Fetch the namespace to get the IP pool annotation
+			// Fetch the namespace to get the IP pool annotation
 			namespace := admissionReviewReq.Request.Name
 			ns, err := a.K8sClientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
 			if err != nil {
@@ -134,7 +134,13 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				return
 			}
 
-			// Step 2: Mark the IP pool as available by removing the annotation
+			// Mark the IP pool as available by updating the label
+			if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
+				http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			// Remove the annotation from the namespace
 			patch := []map[string]interface{}{
 				{
 					"op":   "remove",
