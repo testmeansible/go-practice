@@ -134,11 +134,19 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				return
 			}
 
-			ipPool := ns.Annotations["ip-pool"]
-			if ipPool == "" {
+			ipPoolAnnotation := ns.Annotations["cni.projectcalico.org/ipv4pools"]
+			if ipPoolAnnotation == "" {
 				writeAdmissionResponse(w, admissionResponse)
 				return
 			}
+
+			// Parse the IP pool name from the annotation
+			var ipPools []string
+			if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
+				http.Error(w, fmt.Sprintf("could not parse IP pool annotation: %v", err), http.StatusInternalServerError)
+				return
+			}
+			ipPool := ipPools[0] // Assuming single IP pool per namespace
 
 			// Mark the IP pool as available by updating the label
 			if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
@@ -150,7 +158,7 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 			patch := []map[string]interface{}{
 				{
 					"op":   "remove",
-					"path": "/metadata/annotations/ip-pool",
+					"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
 				},
 			}
 
