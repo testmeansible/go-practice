@@ -75,179 +75,167 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 	}
 
 	if admissionReviewReq.Request.Kind.Kind == "Namespace" {
-		switch admissionReviewReq.Request.Operation {
-		case admissionv1.Create:
-			a.handleNamespaceCreation(w, admissionReviewReq, admissionResponse)
-
-		case admissionv1.Delete:
-			a.handleNamespaceDeletion(w, admissionReviewReq, admissionResponse)
-
-		// case admissionv1.Update:
-		// 	// Pass through UPDATE operations
-		// 	a.Logger.Info("Passing through update request")
-		// 	admissionResponse.Allowed = true
-		// 	a.writeAdmissionResponse(w, admissionReviewReq, admissionResponse)
-
-		default:
-			a.Logger.Warn("Unsupported operation", zap.String("operation", string(admissionReviewReq.Request.Operation)))
-			admissionResponse.Allowed = false
-			admissionResponse.Result = &metav1.Status{
-				Message: "Unsupported operation",
+		if admissionReviewReq.Request.Operation == admissionv1.Create {
+			// Handle namespace creation logic
+			// a.Logger.Info("Handling namespace creation")
+			a.Logger.Info("Processing namespace creation", zap.String("namespace", admissionReviewReq.Request.Name))
+			// Fetch the available IP pools
+			ipPools, err := a.Clientset.ProjectcalicoV3().IPPools().List(context.TODO(), metav1.ListOptions{})
+			if err != nil {
+				a.Logger.Error("could not list IP pools", zap.Error(err))
+				admissionResponse.Allowed = false
+				admissionResponse.Result = &metav1.Status{
+					Message: fmt.Sprintf("could not list IP pools: %v", err),
+				}
+				a.writeAdmissionResponse(w, admissionResponse)
+				return
 			}
-			a.writeAdmissionResponse(w, admissionResponse)
+
+			// Select an available subnet
+			availableSubnet := a.selectAvailableSubnet(ipPools.Items)
+			if availableSubnet == "" {
+				a.Logger.Warn("No available subnets found")
+				admissionResponse.Allowed = false
+				admissionResponse.Result = &metav1.Status{
+					Message: "No available subnets found.",
+				}
+				a.writeAdmissionResponse(w, admissionResponse)
+				return
+			}
+			a.Logger.Info("Selected subnet for namespace", zap.String("subnet", availableSubnet))
+			// Step 4: Patch the namespace with the selected IP pool
+			annotationValue := fmt.Sprintf(`["%s"]`, availableSubnet)
+
+			patch := []map[string]interface{}{
+				{
+					"op":    "add",
+					"path":  "/metadata/annotations",
+					"value": map[string]string{}, // This will create an empty annotations map if it doesn't exist
+				},
+				{
+					"op":    "add",
+					"path":  "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // Escaping the "/" character
+					"value": annotationValue,
+				},
+			}
+
+			patchBytes, err := json.Marshal(patch)
+			if err != nil {
+				a.Logger.Error("could not marshal patch", zap.Error(err))
+				http.Error(w, fmt.Sprintf("could not marshal patch: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			admissionResponse.Patch = patchBytes
+			admissionResponse.PatchType = func() *admissionv1.PatchType {
+				pt := admissionv1.PatchTypeJSONPatch
+				return &pt
+			}()
+
+			// Update the IP pool label to "used"
+			if err := a.updateIPPoolLabel(availableSubnet, "used"); err != nil {
+				a.Logger.Error("could not update IP pool label", zap.Error(err))
+				admissionResponse.Allowed = false
+				admissionResponse.Result = &metav1.Status{
+					Message: fmt.Sprintf("could not update IP pool label: %v", err),
+				}
+				a.writeAdmissionResponse(w, admissionResponse)
+				return
+			}
+
+		} else if admissionReviewReq.Request.Operation == admissionv1.Delete {
+			// Handle namespace deletion logic
+			namespace := admissionReviewReq.Request.Name
+			a.Logger.Info("Handling namespace deletion", zap.String("namespace", namespace))
+
+			// Fetch the namespace to get the IP pool annotation
+			ns, err := a.K8sClientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
+			if err != nil {
+				a.Logger.Error("could not fetch namespace", zap.Error(err))
+				http.Error(w, fmt.Sprintf("could not fetch namespace: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			// Fetch the annotation value
+			ipPoolAnnotation, found := ns.Annotations["cni.projectcalico.org/ipv4pools"]
+			if !found || ipPoolAnnotation == "" {
+				a.Logger.Warn("No IP pool annotation found, nothing to update")
+				a.writeAdmissionResponse(w, admissionResponse)
+				return
+			}
+
+			// Decode JSON array from annotation
+			var ipPools []string
+			if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
+				a.Logger.Error("Failed to decode IP pool annotation", zap.String("annotation", ipPoolAnnotation), zap.Error(err))
+				http.Error(w, fmt.Sprintf("could not decode IP pool annotation: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			// Use the first item from the list if it's not empty
+			if len(ipPools) > 0 {
+				ipPoolName := ipPools[0]
+				a.Logger.Info("Selected IP pool name", zap.String("poolName", ipPoolName))
+
+				// Update the IP pool label to "available"
+				if err := a.updateIPPoolLabel(ipPoolName, "available"); err != nil {
+					a.Logger.Error("could not update IP pool label", zap.Error(err))
+					http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				a.Logger.Warn("No IP pools found in annotation")
+			}
+
+			// Remove the annotation from the namespace
+			patch := []map[string]interface{}{
+				{
+					"op":   "remove",
+					"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
+				},
+			}
+
+			patchBytes, err := json.Marshal(patch)
+			if err != nil {
+				a.Logger.Error("could not marshal patch", zap.Error(err))
+				http.Error(w, fmt.Sprintf("could not marshal patch: %v", err), http.StatusInternalServerError)
+				return
+			}
+
+			admissionResponse.Patch = patchBytes
+			admissionResponse.PatchType = func() *admissionv1.PatchType {
+				pt := admissionv1.PatchTypeJSONPatch
+				return &pt
+			}()
+
 		}
-	} else {
-		a.Logger.Warn("Unsupported resource kind", zap.String("kind", admissionReviewReq.Request.Kind.Kind))
-		admissionResponse.Allowed = false
-		admissionResponse.Result = &metav1.Status{
-			Message: "Unsupported resource kind",
-		}
-		a.writeAdmissionResponse(w, admissionResponse)
 	}
 
+	a.writeAdmissionResponse(w, admissionResponse)
 	a.Logger.Info("Admission review request handled successfully")
 }
 
-func (a *AdmissionController) handleNamespaceCreation(w http.ResponseWriter, admissionReviewReq admissionv1.AdmissionReview, admissionResponse *admissionv1.AdmissionResponse) {
-	a.Logger.Info("Processing namespace creation", zap.String("namespace", admissionReviewReq.Request.Name))
-
-	// Fetch available IP pools
-	ipPools, err := a.Clientset.ProjectcalicoV3().IPPools().List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		a.Logger.Error("could not list IP pools", zap.Error(err))
-		admissionResponse.Allowed = false
-		admissionResponse.Result = &metav1.Status{
-			Message: fmt.Sprintf("could not list IP pools: %v", err),
+// Select an available subnet
+func (a *AdmissionController) selectAvailableSubnet(subnets []crdv1.IPPool) string {
+	for _, subnet := range subnets {
+		labels := normalizeLabels(subnet.ObjectMeta.Labels)
+		if location, ok := labels["location"]; ok && location == "zone-lhr" {
+			if status, ok := labels["status"]; ok && status == "available" {
+				a.Logger.Info("Found available subnet", zap.String("subnet", subnet.Name))
+				return subnet.Name
+			}
 		}
-		a.writeAdmissionResponse(w, admissionResponse)
-		return
 	}
-
-	// Select an available subnet
-	availableSubnet := a.selectAvailableSubnet(ipPools.Items)
-	if availableSubnet == "" {
-		a.Logger.Warn("No available subnets found")
-		admissionResponse.Allowed = false
-		admissionResponse.Result = &metav1.Status{
-			Message: "No available subnets found.",
-		}
-		a.writeAdmissionResponse(w, admissionResponse)
-		return
-	}
-
-	a.Logger.Info("Selected subnet for namespace", zap.String("subnet", availableSubnet))
-
-	// Patch the namespace with the selected IP pool
-	annotationValue := fmt.Sprintf(`["%s"]`, availableSubnet)
-	patch := []map[string]interface{}{
-		{
-			"op":    "add",
-			"path":  "/metadata/annotations",
-			"value": map[string]string{}, // Ensure annotations map exists
-		},
-		{
-			"op":    "add",
-			"path":  "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // Escaping "/" character
-			"value": annotationValue,
-		},
-	}
-
-	if err := a.applyPatch(w, admissionReviewReq, patch); err != nil {
-		a.Logger.Error("could not apply patch", zap.Error(err))
-		admissionResponse.Allowed = false
-		admissionResponse.Result = &metav1.Status{
-			Message: fmt.Sprintf("could not apply patch: %v", err),
-		}
-		a.writeAdmissionResponse(w, admissionResponse)
-		return
-	}
-
-	// Update the IP pool label to "used"
-	if err := a.updateIPPoolLabel(availableSubnet, "used"); err != nil {
-		a.Logger.Error("could not update IP pool label", zap.Error(err))
-		admissionResponse.Allowed = false
-		admissionResponse.Result = &metav1.Status{
-			Message: fmt.Sprintf("could not update IP pool label: %v", err),
-		}
-		a.writeAdmissionResponse(w, admissionResponse)
-	}
+	a.Logger.Warn("No available subnet found")
+	return ""
 }
 
-func (a *AdmissionController) handleNamespaceDeletion(w http.ResponseWriter, admissionReviewReq admissionv1.AdmissionReview, admissionResponse *admissionv1.AdmissionResponse) {
-	namespace := admissionReviewReq.Request.Name
-	a.Logger.Info("Handling namespace deletion", zap.String("namespace", namespace))
-
-	// Fetch the namespace to get the IP pool annotation
-	ns, err := a.K8sClientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
-	if err != nil {
-		a.Logger.Error("could not fetch namespace", zap.Error(err))
-		http.Error(w, fmt.Sprintf("could not fetch namespace: %v", err), http.StatusInternalServerError)
-		return
+func normalizeLabels(labels map[string]string) map[string]string {
+	normalized := make(map[string]string)
+	for key, value := range labels {
+		normalized[strings.ToLower(key)] = value
 	}
-
-	// Fetch the annotation value
-	ipPoolAnnotation, found := ns.Annotations["cni.projectcalico.org/ipv4pools"]
-	if !found || ipPoolAnnotation == "" {
-		a.Logger.Warn("No IP pool annotation found, nothing to update")
-		a.writeAdmissionResponse(w, admissionResponse)
-		return
-	}
-
-	// Decode JSON array from annotation
-	var ipPools []string
-	if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
-		a.Logger.Error("Failed to decode IP pool annotation", zap.String("annotation", ipPoolAnnotation), zap.Error(err))
-		http.Error(w, fmt.Sprintf("could not decode IP pool annotation: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// Use the first item from the list if it's not empty
-	if len(ipPools) > 0 {
-		ipPoolName := ipPools[0]
-		a.Logger.Info("Selected IP pool name", zap.String("poolName", ipPoolName))
-
-		// Update the IP pool label to "available"
-		if err := a.updateIPPoolLabel(ipPoolName, "available"); err != nil {
-			a.Logger.Error("could not update IP pool label", zap.Error(err))
-			http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		a.Logger.Warn("No IP pools found in annotation")
-	}
-
-	// // Remove the annotation from the namespace
-	// patch := []map[string]interface{}{
-	// 	{
-	// 		"op":   "remove",
-	// 		"path": "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // remove annotation key
-	// 	},
-	// }
-
-	// if err := a.applyPatch(w, patch); err != nil {
-	// 	a.Logger.Error("could not apply patch", zap.Error(err))
-	// 	http.Error(w, fmt.Sprintf("could not apply patch: %v", err), http.StatusInternalServerError)
-	// }
-	// Do not modify the namespace object in the admission response
-	admissionResponse.Allowed = true
-	a.writeAdmissionResponse(w, admissionResponse)
-}
-
-func (a *AdmissionController) applyPatch(w http.ResponseWriter, admissionReviewReq admissionv1.AdmissionReview, patch []map[string]interface{}) error {
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		a.Logger.Error("could not marshal patch", zap.Error(err))
-		http.Error(w, fmt.Sprintf("could not marshal patch: %v", err), http.StatusInternalServerError)
-		return err
-	}
-
-	admissionResponse := &admissionv1.AdmissionResponse{
-		UID:       admissionReviewReq.Request.UID,
-		Patch:     patchBytes,
-		PatchType: func() *admissionv1.PatchType { pt := admissionv1.PatchTypeJSONPatch; return &pt }(),
-	}
-	a.writeAdmissionResponse(w, admissionResponse)
-	return nil
+	return normalized
 }
 
 func (a *AdmissionController) updateIPPoolLabel(poolName, newStatus string) error {
@@ -258,9 +246,11 @@ func (a *AdmissionController) updateIPPoolLabel(poolName, newStatus string) erro
 	}
 
 	labels := normalizeLabels(ipPool.ObjectMeta.Labels)
+
 	if labels == nil {
 		labels = make(map[string]string)
 	}
+
 	labels["status"] = newStatus
 	ipPool.ObjectMeta.Labels = labels
 
@@ -287,28 +277,6 @@ func (a *AdmissionController) writeAdmissionResponse(w http.ResponseWriter, admi
 		a.Logger.Error("could not encode response", zap.Error(err))
 		http.Error(w, fmt.Sprintf("could not encode response: %v", err), http.StatusInternalServerError)
 	}
+
 	a.Logger.Info("Admission review request handled successfully")
-}
-
-// Select an available subnet
-func (a *AdmissionController) selectAvailableSubnet(subnets []crdv1.IPPool) string {
-	for _, subnet := range subnets {
-		labels := normalizeLabels(subnet.ObjectMeta.Labels)
-		if location, ok := labels["location"]; ok && location == "zone-lhr" {
-			if status, ok := labels["status"]; ok && status == "available" {
-				a.Logger.Info("Found available subnet", zap.String("subnet", subnet.Name))
-				return subnet.Name
-			}
-		}
-	}
-	a.Logger.Warn("No available subnet found")
-	return ""
-}
-
-func normalizeLabels(labels map[string]string) map[string]string {
-	normalized := make(map[string]string)
-	for key, value := range labels {
-		normalized[strings.ToLower(key)] = value
-	}
-	return normalized
 }
