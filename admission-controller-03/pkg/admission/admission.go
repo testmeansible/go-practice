@@ -85,13 +85,19 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				writeAdmissionResponse(w, admissionResponse)
 				return
 			}
+			// Step 4: Patch the namespace with the selected IP pool
+			annotationValue := fmt.Sprintf(`["%s"]`, availableSubnet)
 
-			// Patch the namespace with the selected IP pool
 			patch := []map[string]interface{}{
 				{
 					"op":    "add",
-					"path":  "/metadata/annotations/ip-pool",
-					"value": availableSubnet,
+					"path":  "/metadata/annotations",
+					"value": map[string]string{}, // This will create an empty annotations map if it doesn't exist
+				},
+				{
+					"op":    "add",
+					"path":  "/metadata/annotations/cni.projectcalico.org~1ipv4pools", // Escaping the "/" character
+					"value": annotationValue,
 				},
 			}
 
