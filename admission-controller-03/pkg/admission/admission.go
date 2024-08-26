@@ -82,6 +82,12 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 		case admissionv1.Delete:
 			a.handleNamespaceDeletion(w, admissionReviewReq, admissionResponse)
 
+		case admissionv1.Update:
+			// Pass through UPDATE operations
+			a.Logger.Info("Passing through update request")
+			admissionResponse.Allowed = true
+			a.writeAdmissionResponse(w, admissionResponse)
+
 		default:
 			a.Logger.Warn("Unsupported operation", zap.String("operation", string(admissionReviewReq.Request.Operation)))
 			admissionResponse.Allowed = false
