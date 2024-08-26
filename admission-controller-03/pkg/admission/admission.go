@@ -145,10 +145,10 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 
 		} else if admissionReviewReq.Request.Operation == admissionv1.Delete {
 			// Handle namespace deletion logic
-			// Fetch the namespace to get the IP pool annotation
 			namespace := admissionReviewReq.Request.Name
 			a.Logger.Info("Handling namespace deletion", zap.String("namespace", namespace))
 
+			// Fetch the namespace to get the IP pool annotation
 			ns, err := a.K8sClientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
 			if err != nil {
 				a.Logger.Error("could not fetch namespace", zap.Error(err))
@@ -156,34 +156,37 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 				return
 			}
 
-			ipPool, found := ns.Annotations["cni.projectcalico.org/ipv4pools"]
-			if !found || ipPool == "" {
+			// Fetch the annotation value
+			ipPoolAnnotation, found := ns.Annotations["cni.projectcalico.org/ipv4pools"]
+			if !found || ipPoolAnnotation == "" {
 				a.Logger.Warn("No IP pool annotation found, nothing to update")
 				a.writeAdmissionResponse(w, admissionResponse)
 				return
 			}
 
-			// // Parse the IP pool name from the annotation
-			// var ipPools []string
-			// if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
-			// 	a.Logger.Error("could not parse IP pool annotation", zap.Error(err))
-			// 	http.Error(w, fmt.Sprintf("could not parse IP pool annotation: %v", err), http.StatusInternalServerError)
-			// 	return
-			// }
-			// ipPool := ipPools[0] // Assuming single IP pool per namespace
-
-			// Mark the IP pool as available by updating the label
-			// if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
-			// 	a.Logger.Error("could not update IP pool label", zap.Error(err))
-			// 	http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
-			// 	return
-			// }
-			// Update the IP pool label to "available"
-			if err := a.updateIPPoolLabel(ipPool, "available"); err != nil {
-				a.Logger.Error("could not update IP pool label", zap.Error(err))
-				http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
+			// Decode JSON array from annotation
+			var ipPools []string
+			if err := json.Unmarshal([]byte(ipPoolAnnotation), &ipPools); err != nil {
+				a.Logger.Error("Failed to decode IP pool annotation", zap.String("annotation", ipPoolAnnotation), zap.Error(err))
+				http.Error(w, fmt.Sprintf("could not decode IP pool annotation: %v", err), http.StatusInternalServerError)
 				return
 			}
+
+			// Use the first item from the list if it's not empty
+			if len(ipPools) > 0 {
+				ipPoolName := ipPools[0]
+				a.Logger.Info("Selected IP pool name", zap.String("poolName", ipPoolName))
+
+				// Update the IP pool label to "available"
+				if err := a.updateIPPoolLabel(ipPoolName, "available"); err != nil {
+					a.Logger.Error("could not update IP pool label", zap.Error(err))
+					http.Error(w, fmt.Sprintf("could not update IP pool label: %v", err), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				a.Logger.Warn("No IP pools found in annotation")
+			}
+
 			// Remove the annotation from the namespace
 			patch := []map[string]interface{}{
 				{
