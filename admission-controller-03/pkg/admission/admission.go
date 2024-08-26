@@ -152,7 +152,7 @@ func (a *AdmissionController) handleNamespaceCreation(w http.ResponseWriter, adm
 		},
 	}
 
-	if err := a.applyPatch(w, patch); err != nil {
+	if err := a.applyPatch(w, admissionReviewReq, patch); err != nil {
 		a.Logger.Error("could not apply patch", zap.Error(err))
 		admissionResponse.Allowed = false
 		admissionResponse.Result = &metav1.Status{
@@ -233,7 +233,7 @@ func (a *AdmissionController) handleNamespaceDeletion(w http.ResponseWriter, adm
 	a.writeAdmissionResponse(w, admissionResponse)
 }
 
-func (a *AdmissionController) applyPatch(w http.ResponseWriter, patch []map[string]interface{}) error {
+func (a *AdmissionController) applyPatch(w http.ResponseWriter, admissionReviewReq admissionv1.AdmissionReview, patch []map[string]interface{}) error {
 	patchBytes, err := json.Marshal(patch)
 	if err != nil {
 		a.Logger.Error("could not marshal patch", zap.Error(err))
@@ -242,6 +242,7 @@ func (a *AdmissionController) applyPatch(w http.ResponseWriter, patch []map[stri
 	}
 
 	admissionResponse := &admissionv1.AdmissionResponse{
+		UID:       admissionReviewReq.Request.UID,
 		Patch:     patchBytes,
 		PatchType: func() *admissionv1.PatchType { pt := admissionv1.PatchTypeJSONPatch; return &pt }(),
 	}
