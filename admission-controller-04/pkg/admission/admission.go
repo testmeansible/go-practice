@@ -221,12 +221,12 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 func (a *AdmissionController) selectAvailableSubnet(subnets []crdv1.IPPool) string {
 	for _, subnet := range subnets {
 		labels := normalizeLabels(subnet.ObjectMeta.Labels)
-		if location, ok := labels["location"]; ok && location == "zone-lhr" {
-			if status, ok := labels["status"]; ok && status == "available" {
-				a.Logger.Info("Found available subnet", zap.String("subnet", subnet.Name))
-				return subnet.Name
-			}
+		// if location, ok := labels["location"]; ok && location == "zone-lhr" {
+		if status, ok := labels["status"]; ok && status == "available" {
+			a.Logger.Info("Found available subnet", zap.String("subnet", subnet.Name))
+			return subnet.Name
 		}
+		// }
 	}
 	a.Logger.Warn("No available subnet found")
 	return ""
