@@ -109,6 +109,11 @@ func (a *AdmissionController) HandleAdmissionReview(w http.ResponseWriter, r *ht
 			patch := []map[string]interface{}{
 				{
 					"op":    "add",
+					"path":  "/metadata/labels",
+					"value": map[string]string{"team": "ctf"},
+				},
+				{
+					"op":    "add",
 					"path":  "/metadata/annotations",
 					"value": map[string]string{}, // This will create an empty annotations map if it doesn't exist
 				},
