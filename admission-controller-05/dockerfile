@@ -1,0 +1,13 @@
+# Dockerfile
+FROM golang:1.23 AS builder
+
+WORKDIR /app
+COPY . .
+RUN go build -o admission-controller ./cmd/main.go
+
+FROM ubuntu:latest
+
+WORKDIR /root/
+COPY --from=builder /app/admission-controller .
+
+ENTRYPOINT ["./admission-controller"]
